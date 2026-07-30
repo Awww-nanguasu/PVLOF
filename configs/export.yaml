@@ -1,0 +1,107 @@
+timezone: Asia/Shanghai
+
+datasets:
+  device:
+    index: pv_device_data
+    time_field: event_time
+    sort_fields: [event_time, plant_id, device_no]
+    output: data/raw/device
+    fields:
+      - event_time
+      - event_ts_ms
+      - plant_id
+      - device_no
+      - active_power
+      - dc_power
+      - total_power
+      - rated_power
+      - device_temperature
+      - status_code
+      - main_string_count
+      - valid_current_string_count
+      - string_overall_status
+      - string_current_01
+      - string_current_02
+      - string_current_03
+      - string_current_04
+      - string_current_05
+      - string_current_06
+      - string_current_07
+      - string_current_08
+      - string_current_09
+      - string_current_10
+      - string_current_11
+      - string_current_12
+      - string_current_13
+      - string_current_14
+      - string_current_15
+      - string_current_16
+      - string_current_17
+      - string_current_18
+      - string_current_19
+      - string_current_20
+      - string_current_21
+      - string_current_22
+      - string_current_23
+      - string_current_24
+      - string_current_25
+      - string_current_26
+      - string_current_27
+      - string_current_28
+      - string_current_29
+      - string_current_30
+      - string_status_01
+      - string_status_02
+      - string_status_03
+      - string_status_04
+      - string_status_05
+      - string_status_06
+      - string_status_07
+      - string_status_08
+      - string_status_09
+      - string_status_10
+      - string_status_11
+      - string_status_12
+      - string_status_13
+      - string_status_14
+      - string_status_15
+      - string_status_16
+      - string_status_17
+      - string_status_18
+      - string_status_19
+      - string_status_20
+      - string_status_21
+      - string_status_22
+      - string_status_23
+      - string_status_24
+      - string_status_25
+      - string_status_26
+      - string_status_27
+      - string_status_28
+      - string_status_29
+      - string_status_30
+
+  weather_15min:
+    index: pv_energy_predict_plant_15min
+    time_field: time
+    sort_fields: [time, plant_id]
+    output: data/raw/weather_15min
+    fields:
+      - time
+      - plant_id
+      - energy
+      - sensor_ghi
+      - sensor_temperature
+      - sensor_humidity
+      - sensor_wind_speed
+      - forecast_ghi
+      - forecast_temperature
+      - forecast_humidity
+      - forecast_wind_speed
+      - forecast_cloud_cover
+      - forecast_pressure
+      - forecast_rain
+      - forecast_visibility
+      - forecast_weather_code
+      - forecast_wind_direction
+
