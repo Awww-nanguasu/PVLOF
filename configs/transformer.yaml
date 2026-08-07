@@ -1,0 +1,39 @@
+seed: 42
+device: auto
+
+data:
+  train: data/processed/transformer/train.parquet
+  validation: data/processed/transformer/validation.parquet
+  test: data/processed/transformer/test.parquet
+  window_size: 24
+  interval_minutes: 5
+  features:
+    - active_power_ratio
+    - dc_power_ratio
+    - device_temperature
+    - time_sin
+    - time_cos
+    - year_sin
+    - year_cos
+
+model:
+  d_model: 128
+  nhead: 8
+  num_layers: 3
+  dim_feedforward: 256
+  dropout: 0.1
+  device_embedding_dim: 16
+
+training:
+  epochs: 50
+  batch_size: 1024
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  early_stopping_patience: 8
+  num_workers: 4
+  use_amp: true
+  gradient_clip_norm: 1.0
+
+outputs:
+  directory: artifacts/models/transformer
+
