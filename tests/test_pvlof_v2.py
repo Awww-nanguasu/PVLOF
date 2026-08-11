@@ -1,4 +1,5 @@
 import pandas as pd
+from dataclasses import replace
 
 from pv_anomaly.pvlof_v2 import (
     PVLOFV2Calibration,
@@ -115,6 +116,81 @@ def test_collective_event_alerts_new_members_after_group_is_confirmed():
     assert second.loc[second["string_no"].eq(5), "collective_member_alert"].iloc[0] == 1
     assert second.loc[second["string_no"].eq(5), "pvlof_v2_alert"].iloc[0] == 1
     assert second.loc[second["string_no"].eq(5), "collective_event_consecutive"].iloc[0] == 2
+
+
+def test_collective_jaccard_resets_when_small_group_expands_sharply():
+    times = pd.date_range("2026-06-01", periods=2, freq="5min", tz="UTC")
+    frame = pd.DataFrame([
+        {
+            "plant_id": "234", "device_no": "a", "string_no": string_no,
+            "event_time": timestamp, "isolated_raw_alert": 0,
+            "collective_raw_alert": int(string_no <= (2 if point == 0 else 9)),
+            "zero_current_alert": 0,
+        }
+        for point, timestamp in enumerate(times)
+        for string_no in range(1, 11)
+    ])
+    scored = _add_consecutive(
+        frame,
+        PVLOFV2Calibration(
+            minimum_collective_strings=2,
+            collective_overlap_threshold=0.5,
+            minimum_consecutive=2,
+        ),
+    )
+    second = scored[scored["event_time"].eq(times[1])]
+    assert second["collective_overlap"].iloc[0] == 2 / 9
+    assert second["collective_event_consecutive"].iloc[0] == 1
+    assert not second["collective_event_alert"].astype(bool).any()
+
+
+def test_collective_group_above_half_is_rejected_not_truncated():
+    training = _frame([
+        {"a": [10] * 10, "b": [20] * 10, "c": [15] * 10},
+        {"a": [12] * 10, "b": [24] * 10, "c": [18] * 10},
+        {"a": [8] * 10, "b": [16] * 10, "c": [12] * 10},
+    ])
+    calibration, _ = fit_pvlof_v2_calibration(
+        training, n_neighbors=2, minimum_peer_devices=2, minimum_strings=4,
+        maximum_collective_fraction=0.5, max_score_rows=1000,
+    )
+    target = _frame([
+        {"a": [5] * 6 + [10] * 4, "b": [20] * 10, "c": [15] * 10},
+    ])
+    scored = apply_pvlof_v2(target, calibration)
+    device = scored[scored["device_no"].eq("a")]
+    assert device["collective_group_size"].eq(0).all()
+    assert not device["collective_raw_alert"].astype(bool).any()
+
+
+def test_effect_gate_filters_mild_isolated_drop_but_keeps_severe_drop():
+    training = _frame([
+        {"a": [10] * 10, "b": [20] * 10, "c": [15] * 10},
+        {"a": [12] * 10, "b": [24] * 10, "c": [18] * 10},
+        {"a": [8] * 10, "b": [16] * 10, "c": [12] * 10},
+    ])
+    base, _ = fit_pvlof_v2_calibration(
+        training, n_neighbors=2, minimum_peer_devices=2, minimum_strings=4,
+        maximum_collective_fraction=0.5, max_score_rows=1000,
+    )
+    gated = replace(base, minimum_isolated_relative_drop=0.10)
+    mild = _frame([
+        {"a": [9.4] + [10] * 9, "b": [20] * 10, "c": [15] * 10},
+    ])
+    mild_scored = apply_pvlof_v2(mild, gated)
+    mild_string = mild_scored[mild_scored["device_no"].eq("a") & mild_scored["string_no"].eq(1)]
+    assert mild_string["isolated_relative_drop"].iloc[0] < 0.10
+    assert mild_string["isolated_effect_eligible"].iloc[0] == 0
+    assert mild_string["isolated_directional_raw_alert"].iloc[0] == 0
+
+    severe = _frame([
+        {"a": [7.0] + [10] * 9, "b": [20] * 10, "c": [15] * 10},
+    ])
+    severe_scored = apply_pvlof_v2(severe, gated)
+    severe_string = severe_scored[severe_scored["device_no"].eq("a") & severe_scored["string_no"].eq(1)]
+    assert severe_string["isolated_relative_drop"].iloc[0] >= 0.10
+    assert severe_string["isolated_effect_eligible"].iloc[0] == 1
+    assert severe_string["isolated_directional_raw_alert"].iloc[0] == 1
 
 
 def test_group_continuity_modification_preserves_legacy_mixed_branch_alerts():
