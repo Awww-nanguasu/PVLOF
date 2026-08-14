@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 
 KEYS = ["plant_id", "device_no", "event_time"]
@@ -23,7 +24,7 @@ def _numbers(values: pd.Series) -> str:
 
 
 def _alerts(path: str, column: str, label: str) -> pd.DataFrame:
-    frame = pd.read_parquet(path)
+    frame = pd.read_parquet(path, columns=[*KEYS, "string_no", column])
     missing = sorted({*KEYS, "string_no", column} - set(frame.columns))
     if missing:
         raise ValueError(f"{path} is missing columns: {missing}")
@@ -37,6 +38,73 @@ def _alerts(path: str, column: str, label: str) -> pd.DataFrame:
         .rename(label)
         .reset_index()
     )
+
+
+def _filtered_string_details(
+    v13_path: str,
+    v14_path: str,
+    alert_column: str,
+    timezone: str,
+) -> pd.DataFrame:
+    diagnostic_candidates = [
+        "string_current",
+        "expected_current",
+        "isolated_absolute_drop",
+        "isolated_relative_drop",
+        "residual_ratio",
+        "residual_median",
+        "pvlof_score",
+        "isolated_hier_lof_threshold",
+        "isolated_hier_threshold_level",
+    ]
+    v13_columns = set(pq.ParquetFile(v13_path).schema.names)
+    selected_diagnostics = [
+        column for column in diagnostic_candidates if column in v13_columns
+    ]
+    key_columns = [*KEYS, "string_no"]
+    left = pd.read_parquet(
+        v13_path,
+        columns=[*key_columns, alert_column, *selected_diagnostics],
+    ).rename(columns={alert_column: "_v13_alert"})
+    right = pd.read_parquet(
+        v14_path,
+        columns=[*key_columns, alert_column],
+    ).rename(columns={alert_column: "_v14_alert"})
+    for frame in (left, right):
+        frame["plant_id"] = frame["plant_id"].astype(str)
+        frame["device_no"] = frame["device_no"].astype(str)
+        frame["event_time"] = pd.to_datetime(frame["event_time"], utc=True)
+        frame["string_no"] = pd.to_numeric(
+            frame["string_no"], errors="raise"
+        ).astype("Int64")
+    merged = left.merge(right, on=key_columns, how="left", validate="one_to_one")
+    filtered = merged[
+        merged["_v13_alert"].fillna(False).astype(bool)
+        & ~merged["_v14_alert"].fillna(False).astype(bool)
+    ].copy()
+    if (
+        "isolated_absolute_drop" not in filtered
+        and {"expected_current", "string_current"}.issubset(filtered.columns)
+    ):
+        filtered["isolated_absolute_drop"] = (
+            pd.to_numeric(filtered["expected_current"], errors="coerce")
+            - pd.to_numeric(filtered["string_current"], errors="coerce")
+        )
+    filtered["event_time_local"] = filtered["event_time"].dt.tz_convert(
+        timezone
+    ).dt.strftime("%Y-%m-%d %H:%M:%S")
+    filtered["string_no"] = filtered["string_no"].map(
+        lambda value: f"{int(value):02d}" if pd.notna(value) else ""
+    )
+    ordered = [
+        "plant_id", "device_no", "event_time_local", "string_no",
+        *selected_diagnostics,
+    ]
+    if "isolated_absolute_drop" in filtered and "isolated_absolute_drop" not in ordered:
+        ordered.append("isolated_absolute_drop")
+    return filtered[ordered].sort_values(
+        ["plant_id", "device_no", "event_time_local", "string_no"]
+    ).reset_index(drop=True)
 
 
 def _comparison_case(frame: pd.DataFrame) -> pd.Series:
@@ -108,6 +176,7 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     event_path = output / "pvlof_v13_v14_dual_gate_events.csv"
     point_path = output / "pvlof_v13_v14_dual_gate_points.csv"
+    filtered_path = output / "pvlof_v13_only_filtered_strings.csv"
     events[[
         "row", "event_id", "plant_id", "device_no", "raise_time_local",
         "end_time_local", *LABELS, "comparison_case", "alert_time_points",
@@ -117,6 +186,40 @@ def main() -> None:
         "row", "event_id", "plant_id", "device_no", "event_time_local",
         *LABELS, "comparison_case",
     ]].to_csv(point_path, index=False, encoding="utf-8-sig")
+    filtered = _filtered_string_details(
+        args.v1_3, args.v1_4, args.alert_column, args.timezone
+    )
+    filtered.insert(0, "row", range(1, len(filtered) + 1))
+    filtered.to_csv(filtered_path, index=False, encoding="utf-8-sig")
+
+    plants = sorted(set(points["plant_id"]) | set(events["plant_id"]))
+    per_plant = {}
+    for plant in plants:
+        plant_points = points[points["plant_id"].eq(plant)]
+        plant_events = events[events["plant_id"].eq(plant)]
+        plant_filtered = filtered[filtered["plant_id"].eq(plant)]
+        per_plant[str(plant)] = {
+            "comparison_points": len(plant_points),
+            "point_cases": plant_points["comparison_case"].value_counts().to_dict(),
+            "comparison_events": len(plant_events),
+            "event_cases": plant_events["comparison_case"].value_counts().to_dict(),
+            "v1_3_only_filtered_strings": len(plant_filtered),
+        }
+
+    absolute_drop_summary = None
+    if "isolated_absolute_drop" in filtered:
+        values = pd.to_numeric(
+            filtered["isolated_absolute_drop"], errors="coerce"
+        ).dropna()
+        if len(values):
+            absolute_drop_summary = {
+                "samples": len(values),
+                "minimum": float(values.min()),
+                "median": float(values.median()),
+                "p90": float(values.quantile(0.90)),
+                "maximum": float(values.max()),
+                "below_0_5_ampere": int(values.lt(0.5).sum()),
+            }
 
     report = {
         "v1_3": args.v1_3,
@@ -126,7 +229,13 @@ def main() -> None:
         "points": len(points),
         "event_cases": events["comparison_case"].value_counts().to_dict(),
         "point_cases": points["comparison_case"].value_counts().to_dict(),
-        "outputs": {"events": str(event_path), "points": str(point_path)},
+        "per_plant": per_plant,
+        "v1_3_only_absolute_drop": absolute_drop_summary,
+        "outputs": {
+            "events": str(event_path),
+            "points": str(point_path),
+            "v1_3_only_filtered_strings": str(filtered_path),
+        },
     }
     report_path = output / "summary.json"
     report_path.write_text(
