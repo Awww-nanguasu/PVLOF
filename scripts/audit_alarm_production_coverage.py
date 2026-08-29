@@ -11,6 +11,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from pv_anomaly.alarm_time import alarm_time_grid
+
 
 CURRENT_PATTERN = re.compile(r"^string_current_(\d{2})$")
 DATE_PATTERN = re.compile(r"(?:^|[\\/])date=(\d{4}-\d{2}-\d{2})(?:[\\/]|$)")
@@ -101,16 +103,18 @@ def _read_alarm_points(
         source["plant_id"].notna(), "mapped", "station_unmapped"
     )
 
-    frequency = f"{interval_minutes}min"
     rows: list[dict[str, Any]] = []
     skipped = 0
     for row in source.itertuples(index=False):
-        grid_start = row.raise_time.ceil(frequency)
-        grid_end = row.end_time.floor(frequency)
-        if grid_start > grid_end:
+        grid = alarm_time_grid(
+            row.raise_time,
+            row.end_time,
+            interval_minutes=interval_minutes,
+        )
+        if grid.empty:
             skipped += 1
             continue
-        for event_time in pd.date_range(grid_start, grid_end, freq=frequency):
+        for event_time in grid:
             rows.append(
                 {
                     "alarm_event_id": str(row.id),
