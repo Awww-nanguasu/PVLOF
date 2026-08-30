@@ -11,6 +11,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from pv_anomaly.alarm_time import alarm_time_grid
+
 
 CURRENT_PATTERN = re.compile(r"^string_current_(\d{2})$")
 DATE_PATTERN = re.compile(r"(?:^|[\\/])date=(\d{4}-\d{2}-\d{2})(?:[\\/]|$)")
@@ -228,7 +230,6 @@ def _classify_events(
             zip(group["event_time"], group["current_complete"].astype(bool))
         )
 
-    frequency = f"{interval_minutes}min"
     records: list[dict[str, Any]] = []
     for alarm in alarms.itertuples(index=False):
         plant_id = alarm.plant_id
@@ -270,10 +271,10 @@ def _classify_events(
         overlap_end = min(alarm.end_time, last)
         base["effective_start_time"] = overlap_start
         base["effective_end_time"] = overlap_end
-        expected = pd.date_range(
-            overlap_start.ceil(frequency),
-            overlap_end.floor(frequency),
-            freq=frequency,
+        expected = alarm_time_grid(
+            overlap_start,
+            overlap_end,
+            interval_minutes=interval_minutes,
         )
         values = source_groups[key]
         present = [timestamp in values for timestamp in expected]
@@ -308,12 +309,11 @@ def _classify_events(
 def _expand_complete_alarm_points(events: pd.DataFrame, *, interval_minutes: int) -> pd.DataFrame:
     complete = events[events["classification"].eq("complete")]
     rows: list[dict[str, Any]] = []
-    frequency = f"{interval_minutes}min"
     for event in complete.itertuples(index=False):
-        for event_time in pd.date_range(
-            event.effective_start_time.ceil(frequency),
-            event.effective_end_time.floor(frequency),
-            freq=frequency,
+        for event_time in alarm_time_grid(
+            event.effective_start_time,
+            event.effective_end_time,
+            interval_minutes=interval_minutes,
         ):
             rows.append(
                 {
@@ -339,12 +339,18 @@ def clean_production_data(
     output_report_directory: str | Path,
     timezone: str = "Asia/Shanghai",
     interval_minutes: int = 5,
+    write_current_output: bool = True,
 ) -> dict[str, Any]:
     current_root = Path(output_current_root)
     report_root = Path(output_report_directory)
-    if current_root.exists() and any(current_root.rglob("*.parquet")):
+    if (
+        write_current_output
+        and current_root.exists()
+        and any(current_root.rglob("*.parquet"))
+    ):
         raise FileExistsError(f"Cleaned output already contains Parquet files: {current_root}")
-    current_root.mkdir(parents=True, exist_ok=True)
+    if write_current_output:
+        current_root.mkdir(parents=True, exist_ok=True)
     report_root.mkdir(parents=True, exist_ok=True)
     mapping = _load_station_mapping(station_mapping)
 
@@ -377,13 +383,14 @@ def clean_production_data(
                 continue
             clean = frame[frame["current_complete"]].copy()
             clean_rows += len(clean)
-            _write_clean_partition(
-                clean,
-                plant_id=plant_id,
-                output_root=current_root,
-                timezone=timezone,
-                counters=output_counters,
-            )
+            if write_current_output:
+                _write_clean_partition(
+                    clean,
+                    plant_id=plant_id,
+                    output_root=current_root,
+                    timezone=timezone,
+                    counters=output_counters,
+                )
             if not frame.empty:
                 frame["plant_id"] = plant_id
                 frames.append(
@@ -456,6 +463,7 @@ def clean_production_data(
         "interval_minutes": interval_minutes,
         "production": production_report,
         "output_current_root": str(current_root),
+        "current_output_written": write_current_output,
         "output_report_directory": str(report_root),
         "devices": int(len(ranges)),
         "alarm_events": int(len(classifications)),
@@ -489,6 +497,11 @@ def main() -> None:
         "--output-report-directory",
         default="artifacts/reports/pvlof_cleaning",
     )
+    parser.add_argument(
+        "--skip-current-export",
+        action="store_true",
+        help="Rebuild alarm classifications/points without duplicating cleaned currents",
+    )
     args = parser.parse_args()
     summary = clean_production_data(
         args.input_root,
@@ -500,6 +513,7 @@ def main() -> None:
         output_report_directory=args.output_report_directory,
         timezone=args.timezone,
         interval_minutes=args.interval_minutes,
+        write_current_output=not args.skip_current_export,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=_json_safe))
 
