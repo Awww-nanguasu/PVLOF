@@ -193,6 +193,88 @@ def test_effect_gate_filters_mild_isolated_drop_but_keeps_severe_drop():
     assert severe_string["isolated_directional_raw_alert"].iloc[0] == 1
 
 
+def test_absolute_effect_gate_is_combined_with_relative_gate():
+    training = _frame([
+        {"a": [10] * 10, "b": [20] * 10, "c": [15] * 10},
+        {"a": [12] * 10, "b": [24] * 10, "c": [18] * 10},
+        {"a": [8] * 10, "b": [16] * 10, "c": [12] * 10},
+    ])
+    base, _ = fit_pvlof_v2_calibration(
+        training, n_neighbors=2, minimum_peer_devices=2, minimum_strings=4,
+        maximum_collective_fraction=0.5, max_score_rows=1000,
+    )
+    gated = replace(
+        base,
+        lof_threshold=0.0,
+        minimum_isolated_relative_drop=0.10,
+        minimum_isolated_absolute_drop=0.50,
+    )
+    target = _frame([
+        {"a": [8.8] + [10] * 9, "b": [20] * 10, "c": [15] * 10},
+    ])
+    scored = apply_pvlof_v2(target, gated)
+    string = scored[scored["device_no"].eq("a") & scored["string_no"].eq(1)]
+    assert string["isolated_relative_drop"].iloc[0] >= 0.10
+    assert string["isolated_absolute_drop"].iloc[0] >= 0.50
+    assert string["isolated_relative_effect_eligible"].iloc[0] == 1
+    assert string["isolated_absolute_effect_eligible"].iloc[0] == 1
+    assert string["isolated_effect_eligible"].iloc[0] == 1
+
+    too_small = replace(gated, minimum_isolated_absolute_drop=2.0)
+    rescored = apply_pvlof_v2(target, too_small)
+    string = rescored[rescored["device_no"].eq("a") & rescored["string_no"].eq(1)]
+    assert string["isolated_relative_effect_eligible"].iloc[0] == 1
+    assert string["isolated_absolute_effect_eligible"].iloc[0] == 0
+    assert string["isolated_effect_eligible"].iloc[0] == 0
+    assert string["isolated_directional_raw_alert"].iloc[0] == 0
+
+
+def test_hybrid_effect_gate_accepts_relative_or_absolute_effect():
+    training = _frame([
+        {"a": [10] * 10, "b": [20] * 10, "c": [15] * 10},
+        {"a": [12] * 10, "b": [24] * 10, "c": [18] * 10},
+        {"a": [8] * 10, "b": [16] * 10, "c": [12] * 10},
+    ])
+    base, _ = fit_pvlof_v2_calibration(
+        training, n_neighbors=2, minimum_peer_devices=2, minimum_strings=4,
+        maximum_collective_fraction=0.5, max_score_rows=1000,
+    )
+    target = _frame([
+        {"a": [8.8] + [10] * 9, "b": [20] * 10, "c": [15] * 10},
+    ])
+    relative_only = replace(
+        base,
+        lof_threshold=0.0,
+        minimum_isolated_relative_drop=0.10,
+        minimum_isolated_absolute_drop=100.0,
+        isolated_effect_gate_mode="any",
+    )
+    relative_scored = apply_pvlof_v2(target, relative_only)
+    string = relative_scored[
+        relative_scored["device_no"].eq("a")
+        & relative_scored["string_no"].eq(1)
+    ]
+    assert string["isolated_relative_effect_eligible"].iloc[0] == 1
+    assert string["isolated_absolute_effect_eligible"].iloc[0] == 0
+    assert string["isolated_effect_eligible"].iloc[0] == 1
+
+    absolute_only = replace(
+        base,
+        lof_threshold=0.0,
+        minimum_isolated_relative_drop=0.90,
+        minimum_isolated_absolute_drop=0.50,
+        isolated_effect_gate_mode="any",
+    )
+    absolute_scored = apply_pvlof_v2(target, absolute_only)
+    string = absolute_scored[
+        absolute_scored["device_no"].eq("a")
+        & absolute_scored["string_no"].eq(1)
+    ]
+    assert string["isolated_relative_effect_eligible"].iloc[0] == 0
+    assert string["isolated_absolute_effect_eligible"].iloc[0] == 1
+    assert string["isolated_effect_eligible"].iloc[0] == 1
+
+
 def test_group_continuity_modification_preserves_legacy_mixed_branch_alerts():
     times = pd.date_range("2026-06-01", periods=2, freq="5min", tz="UTC")
     frame = pd.DataFrame([
