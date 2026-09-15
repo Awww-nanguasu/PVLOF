@@ -12,6 +12,68 @@ import pandas as pd
 PARTITION_PATTERN = re.compile(r"date=(\d{4}-\d{2}-\d{2})")
 
 
+def parse_plant_id_mappings(values: list[str] | None) -> dict[str, str]:
+    """Parse repeatable SOURCE=MODEL plant-id mappings from the CLI."""
+    mappings: dict[str, str] = {}
+    for value in values or []:
+        separator = "=" if "=" in value else ":" if ":" in value else None
+        if separator is None:
+            raise ValueError(
+                f"Invalid plant-id mapping {value!r}; expected SOURCE=MODEL"
+            )
+        source, model = (part.strip() for part in value.split(separator, 1))
+        if not source or not model:
+            raise ValueError(
+                f"Invalid plant-id mapping {value!r}; source and model are required"
+            )
+        if source in mappings and mappings[source] != model:
+            raise ValueError(f"Conflicting mappings supplied for plant_id {source!r}")
+        mappings[source] = model
+    return mappings
+
+
+def apply_plant_id_mapping(
+    frame: pd.DataFrame, mappings: dict[str, str]
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Map plant IDs for model lookup while retaining their source values."""
+    result = frame.copy()
+    source = result["plant_id"].astype(str)
+    result["source_plant_id"] = source
+    result["plant_id"] = source.map(mappings).fillna(source)
+    mapped = source.isin(mappings)
+    return result, {
+        "requested": mappings,
+        "rows_mapped": int(mapped.sum()),
+        "rows_unmapped": int((~mapped).sum()),
+        "source_plants": sorted(source.unique().tolist()),
+        "model_plants": sorted(result["plant_id"].astype(str).unique().tolist()),
+    }
+
+
+def restore_source_plant_ids(
+    scored: pd.DataFrame, mapped_input: pd.DataFrame
+) -> pd.DataFrame:
+    """Restore source IDs after scoring and retain the model lookup ID."""
+    lookup = mapped_input[["plant_id", "device_no", "source_plant_id"]].drop_duplicates()
+    duplicate_keys = lookup.duplicated(["plant_id", "device_no"], keep=False)
+    if duplicate_keys.any():
+        examples = lookup.loc[duplicate_keys].head(5).to_dict("records")
+        raise ValueError(
+            "Cannot restore source plant IDs because model plant/device keys are "
+            f"ambiguous; examples: {examples}"
+        )
+    lookup = lookup.rename(columns={"plant_id": "model_plant_id"})
+    result = scored.rename(columns={"plant_id": "model_plant_id"})
+    result = result.merge(
+        lookup,
+        on=["model_plant_id", "device_no"],
+        how="left",
+        validate="many_to_one",
+    )
+    result["plant_id"] = result["source_plant_id"].fillna(result["model_plant_id"])
+    return result
+
+
 def _time_bounds(start: str, end: str, timezone: str) -> tuple[pd.Timestamp, pd.Timestamp]:
     start_time = pd.Timestamp(start)
     end_time = pd.Timestamp(end)
