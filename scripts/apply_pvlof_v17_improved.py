@@ -74,6 +74,14 @@ def main() -> None:
                 "pvlof_v17_improved_segmentation_small_candidate_rescue_raw_candidate"
             ].sum()
         ),
+        "reference_member_gate_passes": int(
+            result[
+                "pvlof_v17_improved_segmentation_reference_member_gate_pass"
+            ].sum()
+        ),
+        "group_gate_applied": bool(
+            result["pvlof_v17_improved_group_gate_applied"].iloc[0]
+        ) if len(result) else config.algorithm_variant != "reference_member_gate_v3",
         "segmentation_alert_points": int(
             result["pvlof_v17_improved_segmentation_alert"].sum()
         ),
