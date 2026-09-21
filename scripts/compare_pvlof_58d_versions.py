@@ -65,10 +65,37 @@ VERSION_SPECS = [
         "raw": "pvlof_v17_improved_raw_anomaly",
         "final": "pvlof_v17_improved_alert",
     },
+    {
+        "key": "v1_7_improved_v3",
+        "label": "PVLOF_V1_7_IMPROVED_V3",
+        "points": "pvlof_v17_improved_v3_full_points.parquet",
+        "evidence": "pvlof_v17_improved_v3_evidence_points.parquet",
+        "raw": "pvlof_v17_improved_raw_anomaly",
+        "final": "pvlof_v17_improved_alert",
+    },
+    {
+        "key": "v1_7_improved_v4",
+        "label": "PVLOF_V1_7_IMPROVED_V4",
+        "points": "pvlof_v17_improved_v4_full_points.parquet",
+        "evidence": "pvlof_v17_improved_v4_evidence_points.parquet",
+        "raw": "pvlof_v17_improved_raw_anomaly",
+        "final": "pvlof_v17_improved_combined_memory_alert",
+    },
+    {
+        "key": "v1_7_improved_v5",
+        "label": "PVLOF_V1_7_IMPROVED_V5",
+        "points": "pvlof_v17_improved_v5_full_points.parquet",
+        "evidence": "pvlof_v17_improved_v5_evidence_points.parquet",
+        "raw": "pvlof_v17_improved_raw_anomaly",
+        "final": "pvlof_v17_improved_combined_memory_alert",
+    },
 ]
 VERSION_LABELS = [spec["label"] for spec in VERSION_SPECS]
 IMPROVED_LABEL = "PVLOF_V1_7_IMPROVED"
 IMPROVED_V2_LABEL = "PVLOF_V1_7_IMPROVED_V2"
+IMPROVED_V3_LABEL = "PVLOF_V1_7_IMPROVED_V3"
+IMPROVED_V4_LABEL = "PVLOF_V1_7_IMPROVED_V4"
+IMPROVED_V5_LABEL = "PVLOF_V1_7_IMPROVED_V5"
 
 
 def _numbers(values: pd.Series) -> str:
@@ -175,6 +202,42 @@ def _v2_case(row: pd.Series) -> str:
     return "neither"
 
 
+def _v3_case(row: pd.Series) -> str:
+    old = str(row[IMPROVED_V2_LABEL])
+    new = str(row[IMPROVED_V3_LABEL])
+    if old and new:
+        return "both_same" if old == new else "both_different"
+    if old:
+        return "v2_only"
+    if new:
+        return "v3_only"
+    return "neither"
+
+
+def _v4_case(row: pd.Series) -> str:
+    old = str(row[IMPROVED_V3_LABEL])
+    new = str(row[IMPROVED_V4_LABEL])
+    if old and new:
+        return "both_same" if old == new else "both_different"
+    if old:
+        return "v3_only"
+    if new:
+        return "v4_only"
+    return "neither"
+
+
+def _v5_case(row: pd.Series) -> str:
+    old = str(row[IMPROVED_V4_LABEL])
+    new = str(row[IMPROVED_V5_LABEL])
+    if old and new:
+        return "both_same" if old == new else "both_different"
+    if old:
+        return "v4_only"
+    if new:
+        return "v5_only"
+    return "neither"
+
+
 def add_comparison_columns(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     result["present_versions"] = result.apply(
@@ -197,6 +260,45 @@ def add_comparison_columns(frame: pd.DataFrame) -> pd.DataFrame:
     result["v2_removed_strings"] = result.apply(
         lambda row: _format_numbers(
             _number_set(row[IMPROVED_LABEL]) - _number_set(row[IMPROVED_V2_LABEL])
+        ),
+        axis=1,
+    )
+    result["v3_vs_v2_case"] = result.apply(_v3_case, axis=1)
+    result["v3_added_strings"] = result.apply(
+        lambda row: _format_numbers(
+            _number_set(row[IMPROVED_V3_LABEL]) - _number_set(row[IMPROVED_V2_LABEL])
+        ),
+        axis=1,
+    )
+    result["v3_removed_strings"] = result.apply(
+        lambda row: _format_numbers(
+            _number_set(row[IMPROVED_V2_LABEL]) - _number_set(row[IMPROVED_V3_LABEL])
+        ),
+        axis=1,
+    )
+    result["v4_vs_v3_case"] = result.apply(_v4_case, axis=1)
+    result["v4_added_strings"] = result.apply(
+        lambda row: _format_numbers(
+            _number_set(row[IMPROVED_V4_LABEL]) - _number_set(row[IMPROVED_V3_LABEL])
+        ),
+        axis=1,
+    )
+    result["v4_removed_strings"] = result.apply(
+        lambda row: _format_numbers(
+            _number_set(row[IMPROVED_V3_LABEL]) - _number_set(row[IMPROVED_V4_LABEL])
+        ),
+        axis=1,
+    )
+    result["v5_vs_v4_case"] = result.apply(_v5_case, axis=1)
+    result["v5_added_strings"] = result.apply(
+        lambda row: _format_numbers(
+            _number_set(row[IMPROVED_V5_LABEL]) - _number_set(row[IMPROVED_V4_LABEL])
+        ),
+        axis=1,
+    )
+    result["v5_removed_strings"] = result.apply(
+        lambda row: _format_numbers(
+            _number_set(row[IMPROVED_V4_LABEL]) - _number_set(row[IMPROVED_V5_LABEL])
         ),
         axis=1,
     )
@@ -249,6 +351,14 @@ def build_confirmed_events(
     timezone: str,
     interval_minutes: int,
 ) -> pd.DataFrame:
+    """Split CURRENT formal-point membership, never historical string unions.
+
+    Each input row must come from final_alert flags. A change in any version's
+    set splits the comparison row; individual string state is not reset.
+    duration_minutes describes the row, not a string's accumulated duration.
+    """
+    if interval_minutes <= 0:
+        raise ValueError("interval_minutes must be positive")
     if points.empty:
         return pd.DataFrame(
             columns=[
@@ -263,6 +373,15 @@ def build_confirmed_events(
                 "v2_vs_improved_case",
                 "v2_added_strings",
                 "v2_removed_strings",
+                "v3_vs_v2_case",
+                "v3_added_strings",
+                "v3_removed_strings",
+                "v4_vs_v3_case",
+                "v4_added_strings",
+                "v4_removed_strings",
+                "v5_vs_v4_case",
+                "v5_added_strings",
+                "v5_removed_strings",
                 "alert_time_points",
                 "duration_minutes",
                 "manual_label",
@@ -271,11 +390,20 @@ def build_confirmed_events(
             ]
         )
     source = points.sort_values(DEVICE_TIME_KEYS).reset_index(drop=True).copy()
+    if source.duplicated(DEVICE_TIME_KEYS).any():
+        raise ValueError("Duplicate device/time rows in formal comparison points")
+    source[VERSION_LABELS] = source[VERSION_LABELS].astype("string").fillna("")
+    source = source[source[VERSION_LABELS].ne("").any(axis=1)].copy()
+    if source.empty:
+        return build_confirmed_events(
+            points.iloc[:0], timezone=timezone, interval_minutes=interval_minutes
+        )
     expected = pd.Timedelta(minutes=interval_minutes)
     source["_event"] = (
         source["plant_id"].ne(source["plant_id"].shift())
         | source["device_no"].ne(source["device_no"].shift())
         | source["event_time"].sub(source["event_time"].shift()).ne(expected)
+        | source[VERSION_LABELS].ne(source[VERSION_LABELS].shift()).any(axis=1)
     ).cumsum()
     source["event_id"] = source["_event"].map(
         {
@@ -289,7 +417,7 @@ def build_confirmed_events(
         "alert_time_points": ("event_time", "size"),
     }
     for label in VERSION_LABELS:
-        aggregations[label] = (label, _numbers)
+        aggregations[label] = (label, "first")
     events = (
         source.groupby(
             ["event_id", "plant_id", "device_no", "_event"], observed=True
@@ -328,6 +456,15 @@ def build_confirmed_events(
         "v2_vs_improved_case",
         "v2_added_strings",
         "v2_removed_strings",
+        "v3_vs_v2_case",
+        "v3_added_strings",
+        "v3_removed_strings",
+        "v4_vs_v3_case",
+        "v4_added_strings",
+        "v4_removed_strings",
+        "v5_vs_v4_case",
+        "v5_added_strings",
+        "v5_removed_strings",
         "alert_time_points",
         "duration_minutes",
         "manual_label",
@@ -391,6 +528,57 @@ def _scope_summary(
         .reset_index()
     )
     result = result.merge(changed_counts, on=keys, how="left", validate="one_to_one")
+    v3_changed = confirmed_events[
+        confirmed_events["v3_vs_v2_case"].isin(
+            ["v2_only", "v3_only", "both_different"]
+        )
+    ]
+    v3_changed_counts = (
+        v3_changed.groupby(keys, observed=True)
+        .size()
+        .rename("v3_changed_events")
+        .reset_index()
+    )
+    result = result.merge(
+        v3_changed_counts,
+        on=keys,
+        how="left",
+        validate="one_to_one",
+    )
+    v4_changed = confirmed_events[
+        confirmed_events["v4_vs_v3_case"].isin(
+            ["v3_only", "v4_only", "both_different"]
+        )
+    ]
+    v4_changed_counts = (
+        v4_changed.groupby(keys, observed=True)
+        .size()
+        .rename("v4_changed_events")
+        .reset_index()
+    )
+    result = result.merge(
+        v4_changed_counts,
+        on=keys,
+        how="left",
+        validate="one_to_one",
+    )
+    v5_changed = confirmed_events[
+        confirmed_events["v5_vs_v4_case"].isin(
+            ["v4_only", "v5_only", "both_different"]
+        )
+    ]
+    v5_changed_counts = (
+        v5_changed.groupby(keys, observed=True)
+        .size()
+        .rename("v5_changed_events")
+        .reset_index()
+    )
+    result = result.merge(
+        v5_changed_counts,
+        on=keys,
+        how="left",
+        validate="one_to_one",
+    )
     numeric = [column for column in result.columns if column not in keys]
     count_columns = [column for column in numeric if not column.endswith("_local")]
     result[count_columns] = result[count_columns].fillna(0).astype(int)
@@ -550,6 +738,12 @@ def _write_workbook(
     confirmed_events: pd.DataFrame,
     v2_raw_changes: pd.DataFrame,
     v2_changes: pd.DataFrame,
+    v3_raw_changes: pd.DataFrame,
+    v3_changes: pd.DataFrame,
+    v4_raw_changes: pd.DataFrame,
+    v4_changes: pd.DataFrame,
+    v5_raw_changes: pd.DataFrame,
+    v5_changes: pd.DataFrame,
 ) -> None:
     try:
         from openpyxl import Workbook
@@ -568,10 +762,27 @@ def _write_workbook(
     header_font = Font(color="FFFFFF", bold=True)
     section_fill = PatternFill("solid", fgColor="D9EAF7")
     thin_gray = Side(style="thin", color="D9E2F3")
-    change_fills = {
-        "v2_only": PatternFill("solid", fgColor="E2F0D9"),
-        "improved_only": PatternFill("solid", fgColor="FCE4D6"),
-        "both_different": PatternFill("solid", fgColor="FFF2CC"),
+    comparison_fills = {
+        "v2_vs_improved_case": {
+            "v2_only": PatternFill("solid", fgColor="E2F0D9"),
+            "improved_only": PatternFill("solid", fgColor="FCE4D6"),
+            "both_different": PatternFill("solid", fgColor="FFF2CC"),
+        },
+        "v3_vs_v2_case": {
+            "v3_only": PatternFill("solid", fgColor="E2F0D9"),
+            "v2_only": PatternFill("solid", fgColor="FCE4D6"),
+            "both_different": PatternFill("solid", fgColor="FFF2CC"),
+        },
+        "v4_vs_v3_case": {
+            "v4_only": PatternFill("solid", fgColor="E2F0D9"),
+            "v3_only": PatternFill("solid", fgColor="FCE4D6"),
+            "both_different": PatternFill("solid", fgColor="FFF2CC"),
+        },
+        "v5_vs_v4_case": {
+            "v5_only": PatternFill("solid", fgColor="E2F0D9"),
+            "v4_only": PatternFill("solid", fgColor="FCE4D6"),
+            "both_different": PatternFill("solid", fgColor="FFF2CC"),
+        },
     }
 
     def excel_value(value: Any):
@@ -616,18 +827,21 @@ def _write_workbook(
         for row in sheet.iter_rows(min_row=2):
             for cell in row:
                 cell.alignment = Alignment(vertical="top", wrap_text=False)
-        if "v2_vs_improved_case" in columns and sheet.max_row >= 2:
-            column_index = columns.index("v2_vs_improved_case") + 1
-            column_letter = get_column_letter(column_index)
+        if sheet.max_row >= 2:
             target = f"A2:{get_column_letter(sheet.max_column)}{sheet.max_row}"
-            for case, fill in change_fills.items():
-                sheet.conditional_formatting.add(
-                    target,
-                    FormulaRule(
-                        formula=[f'${column_letter}2="{case}"'],
-                        fill=fill,
-                    ),
-                )
+            for comparison_column, change_fills in comparison_fills.items():
+                if comparison_column not in columns:
+                    continue
+                column_index = columns.index(comparison_column) + 1
+                column_letter = get_column_letter(column_index)
+                for case, fill in change_fills.items():
+                    sheet.conditional_formatting.add(
+                        target,
+                        FormulaRule(
+                            formula=[f'${column_letter}2="{case}"'],
+                            fill=fill,
+                        ),
+                    )
 
     summary_frame = _summary_rows(summary)
     add_sheet("Summary", summary_frame)
@@ -640,6 +854,12 @@ def _write_workbook(
     add_sheet("ConfirmedEvents", confirmed_events)
     add_sheet("V2RawChanges", v2_raw_changes)
     add_sheet("V2Changes", v2_changes)
+    add_sheet("V3RawChanges", v3_raw_changes)
+    add_sheet("V3Changes", v3_changes)
+    add_sheet("V4RawChanges", v4_raw_changes)
+    add_sheet("V4Changes", v4_changes)
+    add_sheet("V5RawChanges", v5_raw_changes)
+    add_sheet("V5Changes", v5_changes)
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
 
@@ -684,7 +904,7 @@ def main() -> None:
     final_points = _read_layer(plant_directories, signal="final")
     confirmed_points = _read_confirmed_candidate_points(plant_directories)
     confirmed_events = build_confirmed_events(
-        confirmed_points,
+        final_points,
         timezone=args.timezone,
         interval_minutes=args.interval_minutes,
     )
@@ -695,6 +915,27 @@ def main() -> None:
     ].reset_index(drop=True)
     if not v2_changes.empty:
         v2_changes["row"] = range(1, len(v2_changes) + 1)
+    v3_changes = confirmed_events[
+        confirmed_events["v3_vs_v2_case"].isin(
+            ["v2_only", "v3_only", "both_different"]
+        )
+    ].reset_index(drop=True)
+    if not v3_changes.empty:
+        v3_changes["row"] = range(1, len(v3_changes) + 1)
+    v4_changes = confirmed_events[
+        confirmed_events["v4_vs_v3_case"].isin(
+            ["v3_only", "v4_only", "both_different"]
+        )
+    ].reset_index(drop=True)
+    if not v4_changes.empty:
+        v4_changes["row"] = range(1, len(v4_changes) + 1)
+    v5_changes = confirmed_events[
+        confirmed_events["v5_vs_v4_case"].isin(
+            ["v4_only", "v5_only", "both_different"]
+        )
+    ].reset_index(drop=True)
+    if not v5_changes.empty:
+        v5_changes["row"] = range(1, len(v5_changes) + 1)
     by_plant = _scope_summary(
         raw_points,
         final_points,
@@ -734,6 +975,27 @@ def main() -> None:
     ].reset_index(drop=True)
     if not v2_raw_changes.empty:
         v2_raw_changes["row"] = range(1, len(v2_raw_changes) + 1)
+    v3_raw_changes = raw_points[
+        raw_points["v3_vs_v2_case"].isin(
+            ["v2_only", "v3_only", "both_different"]
+        )
+    ].reset_index(drop=True)
+    if not v3_raw_changes.empty:
+        v3_raw_changes["row"] = range(1, len(v3_raw_changes) + 1)
+    v4_raw_changes = raw_points[
+        raw_points["v4_vs_v3_case"].isin(
+            ["v3_only", "v4_only", "both_different"]
+        )
+    ].reset_index(drop=True)
+    if not v4_raw_changes.empty:
+        v4_raw_changes["row"] = range(1, len(v4_raw_changes) + 1)
+    v5_raw_changes = raw_points[
+        raw_points["v5_vs_v4_case"].isin(
+            ["v4_only", "v5_only", "both_different"]
+        )
+    ].reset_index(drop=True)
+    if not v5_raw_changes.empty:
+        v5_raw_changes["row"] = range(1, len(v5_raw_changes) + 1)
 
     paths = {
         "raw_candidate_points": output / "pvlof_58d_raw_candidate_points.csv",
@@ -743,6 +1005,12 @@ def main() -> None:
         "confirmed_events": output / "pvlof_58d_confirmed_events.csv",
         "v2_changes": output / "pvlof_58d_v2_changes.csv",
         "v2_raw_changes": output / "pvlof_58d_v2_raw_candidate_changes.csv",
+        "v3_changes": output / "pvlof_58d_v3_changes.csv",
+        "v3_raw_changes": output / "pvlof_58d_v3_raw_candidate_changes.csv",
+        "v4_changes": output / "pvlof_58d_v4_changes.csv",
+        "v4_raw_changes": output / "pvlof_58d_v4_raw_candidate_changes.csv",
+        "v5_changes": output / "pvlof_58d_v5_changes.csv",
+        "v5_raw_changes": output / "pvlof_58d_v5_raw_candidate_changes.csv",
         "by_plant": output / "pvlof_58d_by_plant.csv",
         "by_device": output / "pvlof_58d_by_device.csv",
         "workbook": output / "pvlof_58d_version_comparison.xlsx",
@@ -756,6 +1024,18 @@ def main() -> None:
     v2_changes.to_csv(paths["v2_changes"], index=False, encoding="utf-8-sig")
     v2_raw_changes.to_csv(
         paths["v2_raw_changes"], index=False, encoding="utf-8-sig"
+    )
+    v3_changes.to_csv(paths["v3_changes"], index=False, encoding="utf-8-sig")
+    v3_raw_changes.to_csv(
+        paths["v3_raw_changes"], index=False, encoding="utf-8-sig"
+    )
+    v4_changes.to_csv(paths["v4_changes"], index=False, encoding="utf-8-sig")
+    v4_raw_changes.to_csv(
+        paths["v4_raw_changes"], index=False, encoding="utf-8-sig"
+    )
+    v5_changes.to_csv(paths["v5_changes"], index=False, encoding="utf-8-sig")
+    v5_raw_changes.to_csv(
+        paths["v5_raw_changes"], index=False, encoding="utf-8-sig"
     )
     by_plant.to_csv(paths["by_plant"], index=False, encoding="utf-8-sig")
     by_device.to_csv(paths["by_device"], index=False, encoding="utf-8-sig")
@@ -778,8 +1058,37 @@ def main() -> None:
         ].value_counts().to_dict(),
         "v2_changed_events": int(len(v2_changes)),
         "v2_changed_raw_candidate_rows": int(len(v2_raw_changes)),
+        "v3_vs_v2_event_cases": confirmed_events[
+            "v3_vs_v2_case"
+        ].value_counts().to_dict(),
+        "v3_changed_events": int(len(v3_changes)),
+        "v3_changed_raw_candidate_rows": int(len(v3_raw_changes)),
+        "v4_vs_v3_event_cases": confirmed_events[
+            "v4_vs_v3_case"
+        ].value_counts().to_dict(),
+        "v4_changed_events": int(len(v4_changes)),
+        "v4_changed_raw_candidate_rows": int(len(v4_raw_changes)),
+        "v5_vs_v4_event_cases": confirmed_events[
+            "v5_vs_v4_case"
+        ].value_counts().to_dict(),
+        "v5_changed_events": int(len(v5_changes)),
+        "v5_changed_raw_candidate_rows": int(len(v5_raw_changes)),
     }
     summary = {
+        "event_table_semantics": {
+            "confirmed_events": "current formal members; split on any version membership change",
+            "duration_minutes": "display segment duration, not cumulative string duration",
+            "confirmed_candidate_points": "historical evidence, including preconfirmation points",
+            "row_numbers": "new segmentation changes row/event_id; old manual labels are not copied",
+            "v4_formal_signal": (
+                "combined_memory_alert: independent combined-candidate string confirmation; "
+                "older versions keep their historical final signals"
+            ),
+            "v5_candidate_policy": (
+                "lowest segment is the core; contiguous higher low-side segments require "
+                "coherent external physical support"
+            ),
+        },
         "scope": {
             "plants": [str(contract.get("plant_id")) for contract in contracts],
             "devices": int(len(device_coverage)),
@@ -803,6 +1112,12 @@ def main() -> None:
         confirmed_events=confirmed_events,
         v2_raw_changes=v2_raw_changes,
         v2_changes=v2_changes,
+        v3_raw_changes=v3_raw_changes,
+        v3_changes=v3_changes,
+        v4_raw_changes=v4_raw_changes,
+        v4_changes=v4_changes,
+        v5_raw_changes=v5_raw_changes,
+        v5_changes=v5_changes,
     )
     summary_path = output / "summary.json"
     summary_path.write_text(
