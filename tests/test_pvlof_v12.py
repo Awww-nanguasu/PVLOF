@@ -63,6 +63,16 @@ def test_weather_conditioning_is_bounded_and_missing_weather_falls_back():
         fallback["raw_virtual_irradiance"],
         equal_nan=True,
     )
+    no_weather, no_weather_report = build_conditioned_virtual_context(
+        frame, base, calibration, None
+    )
+    assert np.allclose(
+        no_weather["conditioned_virtual_irradiance"],
+        no_weather["raw_virtual_irradiance"],
+        equal_nan=True,
+    )
+    assert no_weather_report["forecast_available_rows"] == 0
+    assert no_weather_report["peer_only_rows"] == len(no_weather)
 
 
 def test_forecast_can_supply_context_when_peer_virtual_is_missing():
